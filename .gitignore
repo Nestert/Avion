@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Environments
+venv/
+env/
+ENV/
+
+# Model files
+*.h5
+*.pkl
+
+# Data directories
+gesture_data/
+gesture_videos/
+
+# Generated files
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+*.mov
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# MacOS
+.DS_Store 
