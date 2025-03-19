@@ -22,8 +22,6 @@ gesture_data/
 gesture_videos/
 
 # Generated files
-*.csv
-*.png
 *.jpg
 *.jpeg
 *.mp4
@@ -41,3 +39,5 @@ gesture_videos/
 
 # MacOS
 .DS_Store 
+
+venv311/

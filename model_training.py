@@ -367,7 +367,7 @@ def visualize_results(rf_accuracy, cnn_history, rf_time, cnn_time, rf_inference,
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
     
     plt.tight_layout()
-    plt.savefig("results_comparison.png")
+    plt.savefig("training_results/results_comparison.png")
     plt.close()
 
 def main():
@@ -386,6 +386,9 @@ def main():
         print(f"Создали директории для сбора данных в {data_dir}.")
         print("Пожалуйста, поместите изображения жестов в соответствующие папки и запустите скрипт снова.")
         return
+    
+    # Создание папки для результатов обучения, если её нет
+    os.makedirs("training_results", exist_ok=True)
     
     print("Сбор данных из изображений...")
     features_data, encoded_labels, image_data, encoded_image_labels, label_encoder = collect_dataset(data_dir)
@@ -421,14 +424,14 @@ def main():
     
     # Сохранение моделей
     print("\nСохранение моделей...")
-    with open("random_forest_model.pkl", "wb") as f:
+    with open("models/random_forest_model.pkl", "wb") as f:
         pickle.dump((rf_model, label_encoder), f)
     
     # Сохранение PyTorch модели
-    torch.save(cnn_model.state_dict(), "cnn_model.pth")
+    torch.save(cnn_model.state_dict(), "models/cnn_model.pth")
     
     # Сохранение информации о классах
-    with open("class_info.pkl", "wb") as f:
+    with open("models/class_info.pkl", "wb") as f:
         pickle.dump({"classes": label_encoder.classes_.tolist()}, f)
     
     # Сводная таблица результатов
@@ -441,7 +444,7 @@ def main():
     results_df = pd.DataFrame(results)
     print("\nСравнение подходов:")
     print(results_df)
-    results_df.to_csv("results_comparison.csv", index=False)
+    results_df.to_csv("training_results/results_comparison.csv", index=False)
     
     print("\nОбучение моделей завершено. Результаты сохранены.")
 

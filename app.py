@@ -2,14 +2,15 @@ import streamlit as st
 import cv2
 import numpy as np
 import mediapipe as mp
-import tensorflow as tf
 from sklearn.ensemble import RandomForestClassifier
-import pickle
 import tempfile
 import os
 import time
 from datetime import datetime
 import collections
+import pickle
+import torch
+import torch.nn as nn
 
 # Настройки страницы
 st.set_page_config(
@@ -31,6 +32,135 @@ hands = mp_hands.Hands(
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
+
+# Классы моделей для PyTorch
+class CNNModel(nn.Module):
+    def __init__(self, num_classes=5):
+        super(CNNModel, self).__init__()
+        
+        # Сверточные слои
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        
+        # Полносвязные слои
+        self.fc_layers = nn.Sequential(
+            nn.Linear(128 * 16 * 16, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, num_classes)
+        )
+    
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Преобразование в плоский вектор
+        x = self.fc_layers(x)
+        return x
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_size=63, hidden_size=64, num_layers=1, num_classes=5):
+        super(LSTMModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        # LSTM слои
+        self.lstm1 = nn.LSTM(input_size, hidden_size, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        self.dropout1 = nn.Dropout(0.2)
+        
+        self.lstm2 = nn.LSTM(hidden_size, hidden_size*2, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        self.dropout2 = nn.Dropout(0.2)
+        
+        self.lstm3 = nn.LSTM(hidden_size*2, hidden_size, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        
+        # Полносвязные слои для классификации
+        self.fc1 = nn.Linear(hidden_size, 64)
+        self.relu = nn.ReLU()
+        self.dropout3 = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(64, num_classes)
+    
+    def forward(self, x):
+        # Первый LSTM слой
+        out, _ = self.lstm1(x)
+        out = self.dropout1(out)
+        
+        # Второй LSTM слой
+        out, _ = self.lstm2(out)
+        out = self.dropout2(out)
+        
+        # Третий LSTM слой
+        out, _ = self.lstm3(out)
+        
+        # Берем только выход последнего временного шага
+        out = out[:, -1, :]
+        
+        # Полносвязные слои
+        out = self.fc1(out)
+        out = self.relu(out)
+        out = self.dropout3(out)
+        out = self.fc2(out)
+        
+        return out
+
+# Загрузка моделей
+@st.cache_resource
+def load_models():
+    models = {}
+    
+    # Загрузка Random Forest
+    try:
+        with open('models/random_forest_model.pkl', 'rb') as f:
+            rf_model, label_encoder = pickle.load(f)
+        models["rf"] = (rf_model, label_encoder)
+        print("Random Forest модель загружена")
+    except Exception as e:
+        print(f"Ошибка загрузки Random Forest: {e}")
+        models["rf"] = None
+    
+    # Загрузка CNN
+    try:
+        # Загрузка информации о классах
+        with open('models/class_info.pkl', 'rb') as f:
+            class_info = pickle.load(f)
+        
+        # Создание и загрузка модели CNN
+        cnn_model = CNNModel(num_classes=len(class_info["classes"]))
+        cnn_model.load_state_dict(torch.load('models/cnn_model.pth', map_location=torch.device('cpu')))
+        cnn_model.eval()  # Перевод в режим оценки
+        models["cnn"] = (cnn_model, class_info["classes"])
+        print("CNN модель загружена")
+    except Exception as e:
+        print(f"Ошибка загрузки CNN: {e}")
+        models["cnn"] = None
+    
+    # Загрузка LSTM
+    try:
+        # Создание и загрузка модели LSTM
+        lstm_model = LSTMModel(input_size=63, num_classes=len(class_info["classes"]))
+        lstm_model.load_state_dict(torch.load('models/lstm_model.pth', map_location=torch.device('cpu')))
+        lstm_model.eval()  # Перевод в режим оценки
+        models["lstm"] = (lstm_model, class_info["classes"])
+        print("LSTM модель загружена")
+    except Exception as e:
+        print(f"Ошибка загрузки LSTM: {e}")
+        models["lstm"] = None
+    
+    return models
+
+# Загружаем модели при запуске приложения
+MODELS = load_models()
 
 # Класс для стабилизации предсказаний через систему голосования
 class PredictionStabilizer:
@@ -122,22 +252,30 @@ class LandmarkHistory:
 def approach_1_random_forest(features):
     """Подход 1: Случайный лес на основе координат и расстояний"""
     try:
-        # Здесь будет загрузка предварительно обученной модели
-        # В реальном приложении модель была бы обучена заранее
-        # и загружена из файла
-        # model = pickle.load(open('random_forest_model.pkl', 'rb'))
-        # prediction = model.predict([features])[0]
-        
-        # Симуляция предсказания для демонстрации
-        # Используем seed на основе признаков, чтобы одинаковые жесты давали одинаковые результаты
-        seed = int(sum(features[:5]) * 1000) % 100000
-        np.random.seed(seed)
-        
-        gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
-        prediction = gesture_list[np.random.randint(0, 5)]
-        confidence = np.random.uniform(0.7, 0.99)
-        
-        return prediction, confidence
+        if MODELS["rf"] is not None:
+            # Используем реальную модель
+            rf_model, label_encoder = MODELS["rf"]
+            prediction_idx = rf_model.predict([features])[0]
+            prediction = label_encoder.inverse_transform([prediction_idx])[0]
+            
+            # Получаем вероятности
+            probabilities = rf_model.predict_proba([features])[0]
+            confidence = probabilities[prediction_idx]
+            
+            # Преобразуем имя жеста к формату интерфейса
+            prediction = prediction.replace('_', ' ').title()
+            
+            return prediction, confidence
+        else:
+            # Симуляция предсказания для демонстрации
+            seed = int(sum(features[:5]) * 1000) % 100000
+            np.random.seed(seed)
+            
+            gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
+            prediction = gesture_list[np.random.randint(0, 5)]
+            confidence = np.random.uniform(0.7, 0.99)
+            
+            return prediction, confidence
     except Exception as e:
         st.error(f"Error in approach 1: {e}")
         return "Error", 0
@@ -145,22 +283,71 @@ def approach_1_random_forest(features):
 def approach_2_cnn(image, hand_landmarks):
     """Подход 2: Сверточная нейронная сеть с обработкой изображения"""
     try:
-        # В реальном приложении здесь бы использовалась 
-        # предварительно обученная CNN модель
-        # model = tf.keras.models.load_model('cnn_model.h5')
-        
-        # Симуляция предсказания для демонстрации
-        # Используем seed на основе координат ключевых точек руки
-        if hand_landmarks:
-            coords = [hand_landmarks.landmark[i].x + hand_landmarks.landmark[i].y for i in range(5)]
-            seed = int(sum(coords) * 1000) % 100000
-            np.random.seed(seed)
-        
-        gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
-        prediction = gesture_list[np.random.randint(0, 5)]
-        confidence = np.random.uniform(0.6, 0.95)
-        
-        return prediction, confidence
+        if MODELS["cnn"] is not None and hand_landmarks:
+            # Используем реальную модель
+            cnn_model, classes = MODELS["cnn"]
+            
+            # Подготовка изображения для CNN
+            h, w, _ = image.shape
+            
+            # Определение ограничивающего прямоугольника для руки
+            x_min, y_min = 1, 1
+            x_max, y_max = 0, 0
+            
+            for landmark in hand_landmarks.landmark:
+                x_min = min(x_min, landmark.x)
+                y_min = min(y_min, landmark.y)
+                x_max = max(x_max, landmark.x)
+                y_max = max(y_max, landmark.y)
+            
+            # Добавляем отступ
+            padding = 0.1
+            x_min = max(0, x_min - padding)
+            y_min = max(0, y_min - padding)
+            x_max = min(1, x_max + padding)
+            y_max = min(1, y_max + padding)
+            
+            x_min, y_min = int(x_min * w), int(y_min * h)
+            x_max, y_max = int(x_max * w), int(y_max * h)
+            
+            # Обрезка и изменение размера изображения
+            if x_min >= x_max or y_min >= y_max or x_min < 0 or y_min < 0 or x_max > w or y_max > h:
+                hand_crop = cv2.resize(image, (128, 128))
+            else:
+                hand_crop = image[y_min:y_max, x_min:x_max]
+                hand_crop = cv2.resize(hand_crop, (128, 128))
+            
+            # Нормализация
+            hand_crop = hand_crop / 255.0
+            
+            # Преобразование в тензор и изменение формата (batch, channels, height, width)
+            hand_crop = np.transpose(hand_crop, (2, 0, 1))
+            hand_crop = np.expand_dims(hand_crop, axis=0)
+            hand_crop_tensor = torch.FloatTensor(hand_crop)
+            
+            # Предсказание
+            with torch.no_grad():
+                outputs = cnn_model(hand_crop_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+                prediction_idx = torch.argmax(probabilities).item()
+                confidence = probabilities[prediction_idx].item()
+            
+            # Преобразуем имя жеста к формату интерфейса
+            prediction = classes[prediction_idx].replace('_', ' ').title()
+            
+            return prediction, confidence
+        else:
+            # Симуляция предсказания для демонстрации
+            if hand_landmarks:
+                coords = [hand_landmarks.landmark[i].x + hand_landmarks.landmark[i].y for i in range(5)]
+                seed = int(sum(coords) * 1000) % 100000
+                np.random.seed(seed)
+            
+            gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
+            prediction = gesture_list[np.random.randint(0, 5)]
+            confidence = np.random.uniform(0.6, 0.95)
+            
+            return prediction, confidence
     except Exception as e:
         st.error(f"Error in approach 2: {e}")
         return "Error", 0
@@ -168,21 +355,35 @@ def approach_2_cnn(image, hand_landmarks):
 def approach_3_lstm(landmark_sequence):
     """Подход 3: LSTM на временных последовательностях"""
     try:
-        # В реальном приложении здесь бы использовалась 
-        # предварительно обученная LSTM модель
-        # model = tf.keras.models.load_model('lstm_model.h5')
-        
-        # Симуляция предсказания для демонстрации
-        # Используем seed на основе последних признаков последовательности
-        last_features = landmark_sequence[-1]
-        seed = int(sum(last_features[:5]) * 1000) % 100000
-        np.random.seed(seed)
-        
-        gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
-        prediction = gesture_list[np.random.randint(0, 5)]
-        confidence = np.random.uniform(0.65, 0.97)
-        
-        return prediction, confidence
+        if MODELS["lstm"] is not None:
+            # Используем реальную модель
+            lstm_model, classes = MODELS["lstm"]
+            
+            # Преобразование последовательности в тензор
+            sequence_tensor = torch.FloatTensor(landmark_sequence).unsqueeze(0)  # добавляем размерность батча
+            
+            # Предсказание
+            with torch.no_grad():
+                outputs = lstm_model(sequence_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+                prediction_idx = torch.argmax(probabilities).item()
+                confidence = probabilities[prediction_idx].item()
+            
+            # Преобразуем имя жеста к формату интерфейса
+            prediction = classes[prediction_idx].replace('_', ' ').title()
+            
+            return prediction, confidence
+        else:
+            # Симуляция предсказания для демонстрации
+            last_features = landmark_sequence[-1]
+            seed = int(sum(last_features[:5]) * 1000) % 100000
+            np.random.seed(seed)
+            
+            gesture_list = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
+            prediction = gesture_list[np.random.randint(0, 5)]
+            confidence = np.random.uniform(0.65, 0.97)
+            
+            return prediction, confidence
     except Exception as e:
         st.error(f"Error in approach 3: {e}")
         return "Error", 0

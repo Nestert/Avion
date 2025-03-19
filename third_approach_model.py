@@ -12,7 +12,6 @@ from sklearn.metrics import accuracy_score, classification_report
 import matplotlib.pyplot as plt
 import pandas as pd
 import time
-import pickle
 
 # Определение жестов
 GESTURES = ["thumbs_up", "palm", "fist", "pointing", "victory"]
@@ -300,6 +299,9 @@ def main():
     """Основная функция для обучения LSTM модели."""
     video_dir = "gesture_videos"
     
+    # Создание папки для результатов обучения, если её нет
+    os.makedirs("training_results", exist_ok=True)
+    
     # Проверка наличия реальных данных
     if os.path.exists(video_dir):
         print("Сбор данных из видео...")
@@ -344,14 +346,14 @@ def main():
     plt.legend()
     
     plt.tight_layout()
-    plt.savefig("lstm_training_results.png")
+    plt.savefig("training_results/lstm_training_results.png")
     plt.close()
     
     # Сохранение модели
     print("\nСохранение модели LSTM...")
-    torch.save(lstm_model.state_dict(), "lstm_model.pth")
+    torch.save(lstm_model.state_dict(), "models/lstm_model.pth")
     
-    # Сохранение результатов в CSV
+    # Сохранение результатов в CSV и создание сводной таблицы
     results = {
         "Метрика": ["Точность", "Время обучения (с)", "Время инференса (мс)"],
         "LSTM": [f"{lstm_accuracy:.4f}", f"{lstm_time:.2f}", f"{lstm_inference*1000:.2f}"]
@@ -360,7 +362,7 @@ def main():
     results_df = pd.DataFrame(results)
     print("\nРезультаты LSTM модели:")
     print(results_df)
-    results_df.to_csv("lstm_results.csv", index=False)
+    results_df.to_csv("training_results/lstm_results.csv", index=False)
     
     print("\nОбучение LSTM модели завершено. Результаты сохранены.")
 
