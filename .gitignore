@@ -15,7 +15,6 @@ ENV/
 
 # Model files
 *.h5
-*.pkl
 
 # Data directories
 gesture_data/
