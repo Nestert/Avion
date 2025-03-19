@@ -33,6 +33,9 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 
+# Список доступных жестов
+GESTURE_CLASSES = ["Thumbs Up", "Palm", "Fist", "Pointing", "Victory"]
+
 # Классы моделей для PyTorch
 class CNNModel(nn.Module):
     def __init__(self, num_classes=5):
@@ -389,7 +392,7 @@ def approach_3_lstm(landmark_sequence):
         return "Error", 0
 
 # Функция для отображения результатов распознавания
-def display_results(image, hand_landmarks, prediction1, confidence1, prediction2, confidence2, prediction3, confidence3):
+def display_results(image, hand_landmarks, prediction1, confidence1, prediction2, confidence2, prediction3, confidence3, evaluation_mode=False, current_gesture=None):
     h, w, c = image.shape
     
     # Отрисовка меток руки, если они обнаружены
@@ -409,6 +412,11 @@ def display_results(image, hand_landmarks, prediction1, confidence1, prediction2
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     cv2.putText(image, f"LSTM: {prediction3} ({confidence3:.2f})", (10, 90), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+    
+    # Отображение текущего режима и выбранного жеста в режиме оценки
+    if evaluation_mode and current_gesture:
+        cv2.putText(image, f"Evaluation Mode: {current_gesture}", (10, h - 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
     return image
 
@@ -495,15 +503,56 @@ def process_video(video_source):
                     # Стабилизация предсказания LSTM
                     prediction3, confidence3 = lstm_stabilizer.update(raw_prediction3, raw_confidence3)
                     
-                    # Обновление метрик (в реальном сценарии здесь было бы сравнение с ground truth)
-                    if np.random.random() > 0.25:  # Симуляция правильного предсказания для LSTM
-                        metrics["LSTM"]["correct"] += 1
+                    # Обновление метрик для LSTM в режиме оценки
+                    if evaluation_mode and current_gesture:
+                        # Проверяем, совпадает ли предсказание с выбранным жестом
+                        metrics["LSTM"]["total"] += 1
+                        if prediction3 == current_gesture:
+                            metrics["LSTM"]["correct"] += 1
                 
-                # Обновление метрик для RF и CNN (в реальном сценарии здесь было бы сравнение с ground truth)
-                if np.random.random() > 0.3:  # Симуляция правильного предсказания для RF
-                    metrics["RF"]["correct"] += 1
-                if np.random.random() > 0.35:  # Симуляция правильного предсказания для CNN
-                    metrics["CNN"]["correct"] += 1
+                    # Обновление метрик для RF и CNN в режиме оценки
+                    if evaluation_mode and current_gesture:
+                        # Random Forest
+                        metrics["RF"]["total"] += 1
+                        if prediction1 == current_gesture:
+                            metrics["RF"]["correct"] += 1
+                        
+                        # CNN
+                        metrics["CNN"]["total"] += 1
+                        if prediction2 == current_gesture:
+                            metrics["CNN"]["correct"] += 1
+                    
+                    # Если не в режиме оценки, используем консенсус между моделями для оценки точности
+                    elif not evaluation_mode:
+                        # Определяем консенсус (большинство голосов)
+                        predictions = [prediction1, prediction2]
+                        if prediction3 != "Not detected" and prediction3 != "Error":
+                            predictions.append(prediction3)
+                        
+                        if len(predictions) >= 2:  # Если есть хотя бы два предсказания
+                            prediction_counts = collections.Counter(predictions)
+                            most_common = prediction_counts.most_common(1)
+                            
+                            if most_common:
+                                consensus, count = most_common[0]
+                                
+                                # Если большинство моделей согласны
+                                if count >= len(predictions)/2:
+                                    # Random Forest
+                                    metrics["RF"]["total"] += 1
+                                    if prediction1 == consensus:
+                                        metrics["RF"]["correct"] += 1
+                                    
+                                    # CNN
+                                    metrics["CNN"]["total"] += 1
+                                    if prediction2 == consensus:
+                                        metrics["CNN"]["correct"] += 1
+                                    
+                                    # LSTM (если активен)
+                                    if prediction3 != "Not detected" and prediction3 != "Error":
+                                        metrics["LSTM"]["total"] += 1
+                                        if prediction3 == consensus:
+                                            metrics["LSTM"]["correct"] += 1
             else:
                 # Если рука не обнаружена, очищаем историю и стабилизаторы
                 landmark_history.clear()
@@ -513,7 +562,7 @@ def process_video(video_source):
             
             # Отображение результатов на кадре
             result_frame = display_results(frame, hand_landmarks, prediction1, confidence1, 
-                                          prediction2, confidence2, prediction3, confidence3)
+                                          prediction2, confidence2, prediction3, confidence3, evaluation_mode, current_gesture)
             
             # Преобразование для отображения в Streamlit
             result_frame_rgb = cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB)
@@ -634,15 +683,56 @@ def process_video(video_source):
                         # Стабилизация предсказания LSTM
                         prediction3, confidence3 = lstm_stabilizer.update(raw_prediction3, raw_confidence3)
                         
-                        # Обновление метрик (в реальном сценарии здесь было бы сравнение с ground truth)
-                        if np.random.random() > 0.25:  # Симуляция правильного предсказания для LSTM
-                            metrics["LSTM"]["correct"] += 1
+                        # Обновление метрик для LSTM в режиме оценки
+                        if evaluation_mode and current_gesture:
+                            # Проверяем, совпадает ли предсказание с выбранным жестом
+                            metrics["LSTM"]["total"] += 1
+                            if prediction3 == current_gesture:
+                                metrics["LSTM"]["correct"] += 1
                     
-                    # Обновление метрик для RF и CNN (в реальном сценарии здесь было бы сравнение с ground truth)
-                    if np.random.random() > 0.3:  # Симуляция правильного предсказания для RF
-                        metrics["RF"]["correct"] += 1
-                    if np.random.random() > 0.35:  # Симуляция правильного предсказания для CNN
-                        metrics["CNN"]["correct"] += 1
+                    # Обновление метрик для RF и CNN в режиме оценки
+                    if evaluation_mode and current_gesture:
+                        # Random Forest
+                        metrics["RF"]["total"] += 1
+                        if prediction1 == current_gesture:
+                            metrics["RF"]["correct"] += 1
+                        
+                        # CNN
+                        metrics["CNN"]["total"] += 1
+                        if prediction2 == current_gesture:
+                            metrics["CNN"]["correct"] += 1
+                    
+                    # Если не в режиме оценки, используем консенсус между моделями для оценки точности
+                    elif not evaluation_mode:
+                        # Определяем консенсус (большинство голосов)
+                        predictions = [prediction1, prediction2]
+                        if prediction3 != "Not detected" and prediction3 != "Error":
+                            predictions.append(prediction3)
+                        
+                        if len(predictions) >= 2:  # Если есть хотя бы два предсказания
+                            prediction_counts = collections.Counter(predictions)
+                            most_common = prediction_counts.most_common(1)
+                            
+                            if most_common:
+                                consensus, count = most_common[0]
+                                
+                                # Если большинство моделей согласны
+                                if count >= len(predictions)/2:
+                                    # Random Forest
+                                    metrics["RF"]["total"] += 1
+                                    if prediction1 == consensus:
+                                        metrics["RF"]["correct"] += 1
+                                    
+                                    # CNN
+                                    metrics["CNN"]["total"] += 1
+                                    if prediction2 == consensus:
+                                        metrics["CNN"]["correct"] += 1
+                                    
+                                    # LSTM (если активен)
+                                    if prediction3 != "Not detected" and prediction3 != "Error":
+                                        metrics["LSTM"]["total"] += 1
+                                        if prediction3 == consensus:
+                                            metrics["LSTM"]["correct"] += 1
                 else:
                     # Если рука не обнаружена, очищаем историю и стабилизаторы
                     landmark_history.clear()
@@ -652,7 +742,7 @@ def process_video(video_source):
                 
                 # Отображение результатов на кадре
                 result_frame = display_results(frame, hand_landmarks, prediction1, confidence1, 
-                                              prediction2, confidence2, prediction3, confidence3)
+                                              prediction2, confidence2, prediction3, confidence3, evaluation_mode, current_gesture)
                 
                 # Преобразование для отображения в Streamlit
                 result_frame_rgb = cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB)
@@ -711,11 +801,20 @@ def process_video(video_source):
         
         st.write("## Final Comparison of Approaches")
         
+        # Добавляем дополнительные метрики для лучшего сравнения
+        eval_mode_text = "Evaluation with human feedback" if evaluation_mode else "Evaluation with consensus voting"
+        st.write(f"**Evaluation Method**: {eval_mode_text}")
+        st.write(f"**Total Samples**: RF: {metrics['RF']['total']}, CNN: {metrics['CNN']['total']}, LSTM: {metrics['LSTM']['total']}")
+        
+        # Создаем датафрейм для сравнения
         comparison_data = {
-            "Metric": ["Accuracy", "Average time (ms)"],
-            "Random Forest": [f"{rf_accuracy:.2f}", f"{rf_avg_time*1000:.2f}"],
-            "CNN": [f"{cnn_accuracy:.2f}", f"{cnn_avg_time*1000:.2f}"],
-            "LSTM": [f"{lstm_accuracy:.2f}", f"{lstm_avg_time*1000:.2f}"]
+            "Metric": ["Accuracy", "Average time (ms)", "Correct predictions", "Total predictions"],
+            "Random Forest": [f"{rf_accuracy:.2f}", f"{rf_avg_time*1000:.2f}", 
+                             f"{metrics['RF']['correct']}", f"{metrics['RF']['total']}"],
+            "CNN": [f"{cnn_accuracy:.2f}", f"{cnn_avg_time*1000:.2f}", 
+                   f"{metrics['CNN']['correct']}", f"{metrics['CNN']['total']}"],
+            "LSTM": [f"{lstm_accuracy:.2f}", f"{lstm_avg_time*1000:.2f}", 
+                    f"{metrics['LSTM']['correct']}", f"{metrics['LSTM']['total']}"]
         }
         
         st.table(comparison_data)
@@ -738,18 +837,6 @@ def process_video(video_source):
         else:
             st.write("**Speed Conclusion**: LSTM is the fastest.")
         
-        # Компромисс между точностью и скоростью
-        st.write("### Balance between Accuracy and Speed")
-        
-        # Условные рекомендации
-        if rf_accuracy > 0.8 and rf_avg_time < 0.01:
-            st.write("For devices with limited resources, Random Forest is recommended.")
-        
-        if cnn_accuracy > 0.85:
-            st.write("For high accuracy in static gestures, CNN is recommended.")
-        
-        if lstm_accuracy > 0.85:
-            st.write("For dynamic gesture recognition, LSTM is recommended.")
 
 # Боковая панель
 st.sidebar.title("Settings")
@@ -757,6 +844,18 @@ source_option = st.sidebar.radio(
     "Select source",
     ["Webcam", "Upload video"]
 )
+
+# Режим оценки
+st.sidebar.subheader("Evaluation Mode")
+evaluation_mode = st.sidebar.checkbox("Enable Evaluation Mode", value=False, 
+                                     help="In evaluation mode, you select the current gesture to measure model accuracy")
+current_gesture = None
+if evaluation_mode:
+    current_gesture = st.sidebar.selectbox("Current Gesture", GESTURE_CLASSES)
+    st.sidebar.info("Select the gesture you are currently showing to evaluate model accuracy")
+else:
+    st.sidebar.info("In automatic mode, model accuracy is calculated based on consensus voting between models")
+    st.sidebar.warning("For more accurate evaluation, enable Evaluation Mode and select the gesture you are showing")
 
 # Выбор подходов для сравнения
 st.sidebar.subheader("Select approaches to compare")

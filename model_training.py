@@ -225,7 +225,7 @@ def train_cnn(images, labels):
     
     # Обучение модели
     start_time = time.time()
-    num_epochs = 15
+    num_epochs = 50
     
     for epoch in range(num_epochs):
         model.train()
