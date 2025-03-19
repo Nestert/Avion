@@ -17,7 +17,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Определение жестов
 GESTURES = ["thumbs_up", "palm", "fist", "pointing", "victory"]
 
-# Инициализация MediaPipe Hands
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
@@ -330,7 +329,7 @@ def train_lstm_model(sequences, labels):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Создание модели
-    input_size = X_train.shape[2]  # Количество признаков
+    input_size = X_train.shape[2]  
     hidden_size = 128
     num_layers = 1
     num_classes = len(np.unique(labels))
@@ -362,7 +361,7 @@ def train_lstm_model(sequences, labels):
     
     # Обучение модели
     start_time = time.time()
-    num_epochs = 50  # Увеличиваем потенциальное число эпох, т.к. ранняя остановка предотвратит переобучение
+    num_epochs = 50  
     
     for epoch in range(num_epochs):
         model.train()

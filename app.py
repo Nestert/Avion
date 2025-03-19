@@ -614,8 +614,7 @@ def process_video(video_source):
                 - Average time: {lstm_avg_time*1000:.2f} ms
                 """)
                 
-            # Проверяем, была ли нажата кнопка остановки
-            # Мы не создаем новую кнопку в цикле, а просто проверяем состояние
+
             if stop_pressed:
                 running = False
             
@@ -862,6 +861,11 @@ source_option = st.sidebar.radio(
     "Select source",
     ["Webcam", "Upload video"]
 )
+
+# Кнопка закрытия приложения
+if st.sidebar.button("Закрыть приложение", type="primary"):
+    st.sidebar.success("Сессия завершена. Пожалуйста, закройте вкладку браузера.")
+    st.stop()
 
 # Режим оценки
 st.sidebar.subheader("Evaluation Mode")
