@@ -2,9 +2,10 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import os
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
@@ -92,57 +93,191 @@ def collect_sequence_data(video_paths, sequence_length=15):
     
     return np.array(sequences), np.array(labels)
 
-def create_lstm_model(input_shape, num_classes):
-    """Создание модели LSTM для распознавания последовательностей жестов."""
-    model = Sequential([
-        LSTM(64, return_sequences=True, activation='relu', input_shape=input_shape),
-        Dropout(0.2),
-        LSTM(128, return_sequences=True, activation='relu'),
-        Dropout(0.2),
-        LSTM(64, return_sequences=False, activation='relu'),
-        Dense(64, activation='relu'),
-        Dropout(0.2),
-        Dense(num_classes, activation='softmax')
-    ])
+# Определение LSTM модели с использованием PyTorch
+class LSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes):
+        super(LSTMModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        # LSTM слои
+        self.lstm1 = nn.LSTM(input_size, hidden_size, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        self.dropout1 = nn.Dropout(0.2)
+        
+        self.lstm2 = nn.LSTM(hidden_size, hidden_size*2, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        self.dropout2 = nn.Dropout(0.2)
+        
+        self.lstm3 = nn.LSTM(hidden_size*2, hidden_size, num_layers=1, 
+                            batch_first=True, bidirectional=False)
+        
+        # Полносвязные слои для классификации
+        self.fc1 = nn.Linear(hidden_size, 64)
+        self.relu = nn.ReLU()
+        self.dropout3 = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(64, num_classes)
     
-    model.compile(
-        optimizer='adam',
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    
-    return model
+    def forward(self, x):
+        # Первый LSTM слой
+        out, _ = self.lstm1(x)
+        out = self.dropout1(out)
+        
+        # Второй LSTM слой
+        out, _ = self.lstm2(out)
+        out = self.dropout2(out)
+        
+        # Третий LSTM слой
+        out, _ = self.lstm3(out)
+        
+        # Берем только выход последнего временного шага
+        out = out[:, -1, :]
+        
+        # Полносвязные слои
+        out = self.fc1(out)
+        out = self.relu(out)
+        out = self.dropout3(out)
+        out = self.fc2(out)
+        
+        return out
 
 def train_lstm_model(sequences, labels):
-    """Обучение LSTM модели на последовательностях данных."""
+    """Обучение LSTM модели на последовательностях данных с использованием PyTorch."""
     # Разделение данных на обучающую и тестовую выборки
     X_train, X_test, y_train, y_test = train_test_split(
         sequences, labels, test_size=0.3, random_state=42
     )
     
+    # Преобразование в тензоры PyTorch
+    X_train_tensor = torch.FloatTensor(X_train)
+    y_train_tensor = torch.LongTensor(y_train)
+    X_test_tensor = torch.FloatTensor(X_test)
+    y_test_tensor = torch.LongTensor(y_test)
+    
+    # Создание датасетов и загрузчиков данных
+    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    # Определение устройства (CPU или GPU)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     # Создание модели
-    input_shape = (X_train.shape[1], X_train.shape[2])  # (sequence_length, features)
-    model = create_lstm_model(input_shape, len(GESTURES))
+    input_size = X_train.shape[2]  # Количество признаков
+    hidden_size = 64
+    num_layers = 1
+    num_classes = len(np.unique(labels))
+    
+    model = LSTMModel(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        num_classes=num_classes
+    ).to(device)
+    
+    # Определение функции потерь и оптимизатора
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # Для отслеживания метрик обучения
+    train_losses = []
+    train_accs = []
+    val_losses = []
+    val_accs = []
     
     # Обучение модели
     start_time = time.time()
-    history = model.fit(
-        X_train, y_train,
-        epochs=30,
-        batch_size=32,
-        validation_data=(X_test, y_test),
-        verbose=1
-    )
+    num_epochs = 30
+    
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item() * inputs.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total += targets.size(0)
+            correct += (predicted == targets).sum().item()
+        
+        epoch_loss = running_loss / total
+        epoch_acc = correct / total
+        train_losses.append(epoch_loss)
+        train_accs.append(epoch_acc)
+        
+        # Валидация
+        model.eval()
+        val_running_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                
+                val_running_loss += loss.item() * inputs.size(0)
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += targets.size(0)
+                val_correct += (predicted == targets).sum().item()
+        
+        val_epoch_loss = val_running_loss / val_total
+        val_epoch_acc = val_correct / val_total
+        val_losses.append(val_epoch_loss)
+        val_accs.append(val_epoch_acc)
+        
+        print(f'Эпоха {epoch+1}/{num_epochs} | '
+              f'Потери: {epoch_loss:.4f} | '
+              f'Точность: {epoch_acc:.4f} | '
+              f'Вал. потери: {val_epoch_loss:.4f} | '
+              f'Вал. точность: {val_epoch_acc:.4f}')
+    
     training_time = time.time() - start_time
     
     # Оценка модели
+    model.eval()
     start_time = time.time()
-    _, accuracy = model.evaluate(X_test, y_test, verbose=0)
-    inference_time = (time.time() - start_time) / len(X_test)
+    all_preds = []
+    all_targets = []
     
-    # Получение предсказаний
-    y_pred = np.argmax(model.predict(X_test), axis=1)
-    report = classification_report(y_test, y_pred)
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+    
+    inference_time = (time.time() - start_time) / len(all_targets)
+    
+    accuracy = accuracy_score(all_targets, all_preds)
+    report = classification_report(all_targets, all_preds)
+    
+    # Создание объекта "history" аналогичного Keras для совместимости
+    class HistoryObject:
+        def __init__(self, train_accs, val_accs, train_losses, val_losses):
+            self.history = {
+                'accuracy': train_accs,
+                'val_accuracy': val_accs,
+                'loss': train_losses,
+                'val_loss': val_losses
+            }
+    
+    history = HistoryObject(train_accs, val_accs, train_losses, val_losses)
     
     return model, history, accuracy, report, training_time, inference_time
 
@@ -214,7 +349,7 @@ def main():
     
     # Сохранение модели
     print("\nСохранение модели LSTM...")
-    lstm_model.save("lstm_model.h5")
+    torch.save(lstm_model.state_dict(), "lstm_model.pth")
     
     # Сохранение результатов в CSV
     results = {

@@ -3,9 +3,10 @@ import numpy as np
 import mediapipe as mp
 import os
 import pickle
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset, random_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -149,55 +150,170 @@ def train_random_forest(features, labels):
     
     return model, accuracy, report, training_time, inference_time
 
+# Определение CNN модели с использованием PyTorch
+class CNNModel(nn.Module):
+    def __init__(self, num_classes):
+        super(CNNModel, self).__init__()
+        
+        # Сверточные слои
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        
+        # Полносвязные слои
+        self.fc_layers = nn.Sequential(
+            nn.Linear(128 * 16 * 16, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, num_classes)
+        )
+    
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Преобразование в плоский вектор
+        x = self.fc_layers(x)
+        return x
+
 def train_cnn(images, labels):
-    """Обучение сверточной нейронной сети."""
+    """Обучение сверточной нейронной сети с использованием PyTorch."""
     # Разделение данных на обучающую и тестовую выборки
     X_train, X_test, y_train, y_test = train_test_split(images, labels, test_size=0.3, random_state=42)
     
-    # Преобразование меток в one-hot encoding
-    y_train_one_hot = tf.keras.utils.to_categorical(y_train)
-    y_test_one_hot = tf.keras.utils.to_categorical(y_test)
+    # Подготовка данных для PyTorch (изменение порядка осей для каналов)
+    X_train = np.transpose(X_train, (0, 3, 1, 2))
+    X_test = np.transpose(X_test, (0, 3, 1, 2))
+    
+    # Преобразование в тензоры PyTorch
+    X_train_tensor = torch.FloatTensor(X_train)
+    y_train_tensor = torch.LongTensor(y_train)
+    X_test_tensor = torch.FloatTensor(X_test)
+    y_test_tensor = torch.LongTensor(y_test)
+    
+    # Создание датасетов и загрузчиков данных
+    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    # Определение устройства (CPU или GPU)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Создание модели
-    model = Sequential([
-        Conv2D(32, (3, 3), activation='relu', input_shape=(128, 128, 3)),
-        MaxPooling2D(2, 2),
-        Conv2D(64, (3, 3), activation='relu'),
-        MaxPooling2D(2, 2),
-        Conv2D(128, (3, 3), activation='relu'),
-        MaxPooling2D(2, 2),
-        Flatten(),
-        Dense(128, activation='relu'),
-        Dropout(0.5),
-        Dense(len(np.unique(labels)), activation='softmax')
-    ])
+    num_classes = len(np.unique(labels))
+    model = CNNModel(num_classes).to(device)
     
-    # Компиляция модели
-    model.compile(
-        optimizer='adam',
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
+    # Определение функции потерь и оптимизатора
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    
+    # Для отслеживания метрик обучения
+    train_losses = []
+    train_accs = []
+    val_losses = []
+    val_accs = []
     
     # Обучение модели
     start_time = time.time()
-    history = model.fit(
-        X_train, y_train_one_hot,
-        epochs=15,
-        batch_size=32,
-        validation_data=(X_test, y_test_one_hot),
-        verbose=1
-    )
+    num_epochs = 15
+    
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item() * inputs.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total += targets.size(0)
+            correct += (predicted == targets).sum().item()
+        
+        epoch_loss = running_loss / total
+        epoch_acc = correct / total
+        train_losses.append(epoch_loss)
+        train_accs.append(epoch_acc)
+        
+        # Валидация
+        model.eval()
+        val_running_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                
+                val_running_loss += loss.item() * inputs.size(0)
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += targets.size(0)
+                val_correct += (predicted == targets).sum().item()
+        
+        val_epoch_loss = val_running_loss / val_total
+        val_epoch_acc = val_correct / val_total
+        val_losses.append(val_epoch_loss)
+        val_accs.append(val_epoch_acc)
+        
+        print(f'Эпоха {epoch+1}/{num_epochs} | '
+              f'Потери: {epoch_loss:.4f} | '
+              f'Точность: {epoch_acc:.4f} | '
+              f'Вал. потери: {val_epoch_loss:.4f} | '
+              f'Вал. точность: {val_epoch_acc:.4f}')
+    
     training_time = time.time() - start_time
     
     # Оценка модели
+    model.eval()
     start_time = time.time()
-    _, accuracy = model.evaluate(X_test, y_test_one_hot, verbose=0)
-    inference_time = (time.time() - start_time) / len(X_test)
+    all_preds = []
+    all_targets = []
     
-    # Получение предсказаний в формате классов, а не one-hot encoding
-    y_pred = np.argmax(model.predict(X_test), axis=1)
-    report = classification_report(y_test, y_pred)
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+    
+    inference_time = (time.time() - start_time) / len(all_targets)
+    
+    accuracy = accuracy_score(all_targets, all_preds)
+    report = classification_report(all_targets, all_preds)
+    
+    # Создание объекта "history" аналогичного Keras для совместимости
+    class HistoryObject:
+        def __init__(self, train_accs, val_accs, train_losses, val_losses):
+            self.history = {
+                'accuracy': train_accs,
+                'val_accuracy': val_accs,
+                'loss': train_losses,
+                'val_loss': val_losses
+            }
+    
+    history = HistoryObject(train_accs, val_accs, train_losses, val_losses)
     
     return model, history, accuracy, report, training_time, inference_time
 
@@ -308,7 +424,8 @@ def main():
     with open("random_forest_model.pkl", "wb") as f:
         pickle.dump((rf_model, label_encoder), f)
     
-    cnn_model.save("cnn_model.h5")
+    # Сохранение PyTorch модели
+    torch.save(cnn_model.state_dict(), "cnn_model.pth")
     
     # Сохранение информации о классах
     with open("class_info.pkl", "wb") as f:
