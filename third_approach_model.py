@@ -26,6 +26,106 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 
+def augment_sequence(sequence):
+    """Применение случайных аугментаций к последовательности landmarks."""
+    augmented_sequences = [sequence.copy()]  # Оригинальная последовательность
+    seq_length, num_features = sequence.shape
+    
+    # 1. Добавление шума к координатам
+    noise_factor = np.random.uniform(0.005, 0.02)
+    noise = np.random.normal(0, noise_factor, sequence.shape)
+    noisy_sequence = sequence + noise
+    augmented_sequences.append(noisy_sequence)
+    
+    # 2. Масштабирование координат
+    scale_factor = np.random.uniform(0.8, 1.2)
+    # Предполагаем, что координаты x, y, z идут последовательно для каждой точки
+    scaled_sequence = sequence.copy()
+    # Масштабируем только x и y координаты (первые 2/3 признаков)
+    for i in range(0, num_features, 3):
+        scaled_sequence[:, i] = sequence[:, i] * scale_factor  # x
+        scaled_sequence[:, i+1] = sequence[:, i+1] * scale_factor  # y
+    augmented_sequences.append(scaled_sequence)
+    
+    # 3. Поворот координат в 2D плоскости
+    angle = np.random.uniform(-15, 15) * (np.pi / 180.0)  # конвертируем в радианы
+    rotation_matrix = np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)]
+    ])
+    rotated_sequence = sequence.copy()
+    for i in range(0, num_features, 3):
+        xy_coords = sequence[:, i:i+2]  # x, y координаты
+        rotated_xy = np.dot(xy_coords, rotation_matrix.T)
+        rotated_sequence[:, i:i+2] = rotated_xy
+    augmented_sequences.append(rotated_sequence)
+    
+    # 4. Перемещение (трансляция)
+    translation_x = np.random.uniform(-0.1, 0.1)
+    translation_y = np.random.uniform(-0.1, 0.1)
+    translated_sequence = sequence.copy()
+    for i in range(0, num_features, 3):
+        translated_sequence[:, i] = sequence[:, i] + translation_x  # x
+        translated_sequence[:, i+1] = sequence[:, i+1] + translation_y  # y
+    augmented_sequences.append(translated_sequence)
+    
+    # 5. Зеркальное отражение по x
+    flipped_sequence = sequence.copy()
+    for i in range(0, num_features, 3):
+        flipped_sequence[:, i] = 1.0 - sequence[:, i]  # инвертируем x координаты (предполагая, что они нормализованы от 0 до 1)
+    augmented_sequences.append(flipped_sequence)
+    
+    # 6. Временное искажение (Time warping)
+    # Создаем случайную функцию искажения времени
+    if seq_length > 5:  # Минимальная длина для временного искажения
+        time_indices = np.arange(seq_length)
+        # Создаем новые индексы времени с небольшими искажениями
+        warped_indices = np.linspace(0, seq_length-1, seq_length)
+        warped_indices += np.random.normal(0, 0.5, seq_length)
+        warped_indices = np.clip(warped_indices, 0, seq_length-1)
+        
+        # Интерполируем последовательность по новым индексам
+        warped_sequence = np.zeros_like(sequence)
+        for i in range(num_features):
+            warped_sequence[:, i] = np.interp(warped_indices, time_indices, sequence[:, i])
+        augmented_sequences.append(warped_sequence)
+    
+    # 7. Случайный дропаут кадров
+    if seq_length > 3:  # Минимальная длина для дропаута
+        dropout_sequence = sequence.copy()
+        # Выбираем случайные индексы для дропаута (не более 20% кадров)
+        num_dropout = int(seq_length * np.random.uniform(0.05, 0.2))
+        dropout_indices = np.random.choice(seq_length, num_dropout, replace=False)
+        
+        # Заменяем выбранные кадры средним значением соседних кадров
+        for idx in dropout_indices:
+            if idx > 0 and idx < seq_length - 1:
+                dropout_sequence[idx] = (sequence[idx-1] + sequence[idx+1]) / 2
+            elif idx > 0:
+                dropout_sequence[idx] = sequence[idx-1]
+            else:
+                dropout_sequence[idx] = sequence[idx+1]
+        augmented_sequences.append(dropout_sequence)
+    
+    # 8. Изменение скорости (ускорение/замедление)
+    speed_factor = np.random.uniform(0.8, 1.2)
+    new_length = int(seq_length * speed_factor)
+    if new_length > 2:  # Минимальная длина
+        # Интерполируем к новой длине, затем обратно к исходной для сохранения размерности
+        new_indices = np.linspace(0, seq_length-1, new_length)
+        speed_sequence = np.zeros((new_length, num_features))
+        for i in range(num_features):
+            speed_sequence[:, i] = np.interp(new_indices, np.arange(seq_length), sequence[:, i])
+        
+        # Теперь интерполируем обратно к исходной длине
+        original_indices = np.linspace(0, new_length-1, seq_length)
+        resampled_sequence = np.zeros_like(sequence)
+        for i in range(num_features):
+            resampled_sequence[:, i] = np.interp(original_indices, np.arange(new_length), speed_sequence[:, i])
+        augmented_sequences.append(resampled_sequence)
+    
+    return augmented_sequences
+
 def extract_hand_landmarks(frame):
     """Извлечение признаков руки из кадра видео с помощью MediaPipe."""
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -44,8 +144,8 @@ def extract_hand_landmarks(frame):
     
     return None, None
 
-def collect_sequence_data(image_paths, sequence_length=15):
-    """Сбор последовательностей данных из изображений."""
+def collect_sequence_data(image_paths, sequence_length=15, use_augmentation=True):
+    """Сбор последовательностей данных из изображений с применением аугментаций."""
     sequences = []
     labels = []
     
@@ -87,6 +187,16 @@ def collect_sequence_data(image_paths, sequence_length=15):
                 sequence = all_landmarks[i:i + sequence_length]
                 sequences.append(sequence)
                 labels.append(label_idx)
+                
+                # Применение аугментаций, если включено
+                if use_augmentation:
+                    sequence_array = np.array(sequence)
+                    augmented_sequences = augment_sequence(sequence_array)
+                    
+                    # Пропускаем первый элемент, так как это оригинальная последовательность
+                    for aug_seq in augmented_sequences[1:]:
+                        sequences.append(aug_seq)
+                        labels.append(label_idx)
                 
             print(f"  Создано {len(sequences) - sum(1 for l in labels if l != label_idx)} последовательностей для жеста {label}")
         else:
@@ -402,8 +512,8 @@ def main():
     
     # Проверка наличия реальных данных
     if os.path.exists(image_dir):
-        print("Сбор данных из изображений...")
-        sequences, labels = collect_sequence_data(image_dir)
+        print("Сбор данных из изображений с применением аугментаций...")
+        sequences, labels = collect_sequence_data(image_dir, use_augmentation=True)
     else:
         print(f"Директория {image_dir} не найдена. Используем симулированные данные.")
         sequences, labels = simulate_sequence_data(num_sequences=500)  # Увеличиваем количество симулируемых данных
@@ -412,7 +522,7 @@ def main():
         print("Не удалось собрать последовательности данных.")
         return
     
-    print(f"Собрано {len(sequences)} последовательностей для обучения LSTM.")
+    print(f"Собрано {len(sequences)} последовательностей для обучения LSTM (с аугментациями).")
     
     # Обучение LSTM модели
     print("\nОбучение модели LSTM...")

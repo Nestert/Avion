@@ -26,6 +26,59 @@ hands = mp_hands.Hands(
     min_detection_confidence=0.5
 )
 
+def augment_image(image):
+    """Применение случайных аугментаций к изображению."""
+    augmented_images = [image]  # Оригинальное изображение тоже сохраняем
+    h, w = image.shape[:2]
+    
+    # 1. Поворот на случайный угол
+    angle = np.random.uniform(-15, 15)
+    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1)
+    rotated = cv2.warpAffine(image, M, (w, h))
+    augmented_images.append(rotated)
+    
+    # 2. Изменение масштаба
+    scale = np.random.uniform(0.8, 1.2)
+    scaled = cv2.resize(image, None, fx=scale, fy=scale)
+    scaled = cv2.resize(scaled, (w, h))  # Возвращаем к исходному размеру
+    augmented_images.append(scaled)
+    
+    # 3. Изменение яркости
+    brightness = np.random.uniform(0.7, 1.3)
+    bright = cv2.convertScaleAbs(image, alpha=brightness, beta=0)
+    augmented_images.append(bright)
+    
+    # 4. Добавление гауссовского шума
+    noise = np.random.normal(0, 10, image.shape).astype(np.uint8)
+    noisy = cv2.add(image, noise)
+    augmented_images.append(noisy)
+    
+    # 5. Горизонтальное отражение
+    flipped = cv2.flip(image, 1)
+    augmented_images.append(flipped)
+    
+    # 6. Размытие изображения
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+    augmented_images.append(blurred)
+    
+    # 7. Случайное обрезание и масштабирование
+    crop_factor = np.random.uniform(0.8, 0.95)
+    crop_h, crop_w = int(h * crop_factor), int(w * crop_factor)
+    start_h = np.random.randint(0, h - crop_h + 1)
+    start_w = np.random.randint(0, w - crop_w + 1)
+    cropped = image[start_h:start_h+crop_h, start_w:start_w+crop_w]
+    cropped = cv2.resize(cropped, (w, h))
+    augmented_images.append(cropped)
+    
+    # 8. Изменение контраста
+    contrast = np.random.uniform(0.7, 1.3)
+    mean = np.mean(image)
+    contrasted = (image - mean) * contrast + mean
+    contrasted = np.clip(contrasted, 0, 255).astype(np.uint8)
+    augmented_images.append(contrasted)
+    
+    return augmented_images
+
 def extract_features_from_image(image_path):
     """Извлечение признаков руки из изображения с помощью MediaPipe."""
     image = cv2.imread(image_path)
@@ -86,8 +139,65 @@ def extract_features_from_image(image_path):
     
     return None, None
 
-def collect_dataset(data_dir):
-    """Сбор данных из каталогов с изображениями."""
+def extract_features_from_augmented(image, image_rgb=None):
+    """Извлечение признаков из уже аугментированного изображения."""
+    if image_rgb is None:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    results = hands.process(image_rgb)
+    features = []
+    
+    if results.multi_hand_landmarks:
+        hand_landmarks = results.multi_hand_landmarks[0]
+        
+        # Извлечение координат всех 21 точек руки
+        for landmark in hand_landmarks.landmark:
+            features.extend([landmark.x, landmark.y, landmark.z])
+        
+        # Вычисление относительных расстояний между точками
+        for i in range(21):
+            for j in range(i+1, 21):
+                x1, y1 = hand_landmarks.landmark[i].x, hand_landmarks.landmark[i].y
+                x2, y2 = hand_landmarks.landmark[j].x, hand_landmarks.landmark[j].y
+                distance = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                features.append(distance)
+        
+        # Определение ограничивающего прямоугольника для руки
+        h, w, _ = image.shape
+        x_min, y_min = 1, 1
+        x_max, y_max = 0, 0
+        
+        for landmark in hand_landmarks.landmark:
+            x, y = int(landmark.x * w), int(landmark.y * h)
+            x_min = min(x_min, landmark.x)
+            y_min = min(y_min, landmark.y)
+            x_max = max(x_max, landmark.x)
+            y_max = max(y_max, landmark.y)
+        
+        # Извлечение области руки для CNN модели
+        padding = 0.1
+        x_min = max(0, x_min - padding)
+        y_min = max(0, y_min - padding)
+        x_max = min(1, x_max + padding)
+        y_max = min(1, y_max + padding)
+        
+        x_min, y_min = int(x_min * w), int(y_min * h)
+        x_max, y_max = int(x_max * w), int(y_max * h)
+        
+        # Проверка валидности координат
+        if x_min >= x_max or y_min >= y_max or x_min < 0 or y_min < 0 or x_max > w or y_max > h:
+            # Случай некорректных координат, используем всё изображение
+            hand_crop = cv2.resize(image, (128, 128))
+        else:
+            hand_crop = image[y_min:y_max, x_min:x_max]
+            hand_crop = cv2.resize(hand_crop, (128, 128))
+        
+        return features, hand_crop
+    
+    return None, None
+
+def collect_dataset(data_dir, use_augmentation=True):
+    """Сбор данных из каталогов с изображениями с применением аугментаций."""
     features_data = []
     labels = []
     
@@ -118,9 +228,28 @@ def collect_dataset(data_dir):
                 labels.append(gesture)
                 
                 # Нормализация данных для CNN
-                hand_crop = hand_crop / 255.0
-                image_data.append(hand_crop)
+                hand_crop_norm = hand_crop / 255.0
+                image_data.append(hand_crop_norm)
                 image_labels.append(gesture)
+                
+                # Применение аугментаций, если включено
+                if use_augmentation:
+                    augmented_images = augment_image(hand_crop)
+                    
+                    # Пропускаем первое изображение, так как это оригинал
+                    for aug_img in augmented_images[1:]:
+                        # Получаем признаки из аугментированного изображения
+                        aug_img_rgb = cv2.cvtColor(aug_img, cv2.COLOR_BGR2RGB)
+                        aug_features, aug_crop = extract_features_from_augmented(aug_img, aug_img_rgb)
+                        
+                        if aug_features is not None and aug_crop is not None:
+                            features_data.append(aug_features)
+                            labels.append(gesture)
+                            
+                            # Нормализация для CNN
+                            aug_crop_norm = aug_crop / 255.0
+                            image_data.append(aug_crop_norm)
+                            image_labels.append(gesture)
     
     # Кодирование меток
     le = LabelEncoder()
@@ -389,16 +518,17 @@ def main():
     
     # Создание папки для результатов обучения, если её нет
     os.makedirs("training_results", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
     
-    print("Сбор данных из изображений...")
-    features_data, encoded_labels, image_data, encoded_image_labels, label_encoder = collect_dataset(data_dir)
+    print("Сбор данных из изображений с применением аугментаций...")
+    features_data, encoded_labels, image_data, encoded_image_labels, label_encoder = collect_dataset(data_dir, use_augmentation=True)
     
     if len(features_data) == 0 or len(image_data) == 0:
         print("Не удалось собрать данные. Проверьте наличие изображений в папках.")
         return
     
-    print(f"Собрано {len(features_data)} образцов для обучения Random Forest.")
-    print(f"Собрано {len(image_data)} образцов для обучения CNN.")
+    print(f"Собрано {len(features_data)} образцов для обучения Random Forest (с аугментациями).")
+    print(f"Собрано {len(image_data)} образцов для обучения CNN (с аугментациями).")
     
     # Обучение Random Forest
     print("\nОбучение модели Random Forest...")

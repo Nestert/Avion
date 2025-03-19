@@ -71,31 +71,32 @@ class CNNModel(nn.Module):
         return x
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size=63, hidden_size=64, num_layers=1, num_classes=5):
+    def __init__(self, input_size=63, hidden_size=128, num_layers=1, num_classes=5, dropout_rate=0.3):
         super(LSTMModel, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
         # LSTM слои
         self.lstm1 = nn.LSTM(input_size, hidden_size, num_layers=1, 
-                            batch_first=True, bidirectional=False)
-        self.dropout1 = nn.Dropout(0.2)
+                            batch_first=True, bidirectional=True)
+        self.dropout1 = nn.Dropout(dropout_rate)
         
-        self.lstm2 = nn.LSTM(hidden_size, hidden_size*2, num_layers=1, 
+        # Второй LSTM имеет входной размер, равный удвоенному размеру скрытого состояния из-за двунаправленности
+        self.lstm2 = nn.LSTM(hidden_size*2, hidden_size, num_layers=1, 
                             batch_first=True, bidirectional=False)
-        self.dropout2 = nn.Dropout(0.2)
+        self.dropout2 = nn.Dropout(dropout_rate)
         
-        self.lstm3 = nn.LSTM(hidden_size*2, hidden_size, num_layers=1, 
-                            batch_first=True, bidirectional=False)
+        # Нормализация для стабилизации обучения
+        self.layer_norm = nn.LayerNorm(hidden_size)
         
         # Полносвязные слои для классификации
-        self.fc1 = nn.Linear(hidden_size, 64)
+        self.fc1 = nn.Linear(hidden_size, 128)
         self.relu = nn.ReLU()
-        self.dropout3 = nn.Dropout(0.2)
-        self.fc2 = nn.Linear(64, num_classes)
+        self.dropout3 = nn.Dropout(dropout_rate)
+        self.fc2 = nn.Linear(128, num_classes)
     
     def forward(self, x):
-        # Первый LSTM слой
+        # Первый LSTM слой (двунаправленный)
         out, _ = self.lstm1(x)
         out = self.dropout1(out)
         
@@ -103,11 +104,9 @@ class LSTMModel(nn.Module):
         out, _ = self.lstm2(out)
         out = self.dropout2(out)
         
-        # Третий LSTM слой
-        out, _ = self.lstm3(out)
-        
         # Берем только выход последнего временного шага
         out = out[:, -1, :]
+        out = self.layer_norm(out)
         
         # Полносвязные слои
         out = self.fc1(out)
@@ -151,7 +150,7 @@ def load_models():
     # Загрузка LSTM
     try:
         # Создание и загрузка модели LSTM
-        lstm_model = LSTMModel(input_size=63, num_classes=len(class_info["classes"]))
+        lstm_model = LSTMModel(input_size=63, hidden_size=128, num_layers=1, num_classes=len(class_info["classes"]), dropout_rate=0.3)
         lstm_model.load_state_dict(torch.load('models/lstm_model.pth', map_location=torch.device('cpu')))
         lstm_model.eval()  # Перевод в режим оценки
         models["lstm"] = (lstm_model, class_info["classes"])
@@ -361,6 +360,25 @@ def approach_3_lstm(landmark_sequence):
         if MODELS["lstm"] is not None:
             # Используем реальную модель
             lstm_model, classes = MODELS["lstm"]
+            
+            # Загрузка скейлера (если есть)
+            scaler = None
+            try:
+                with open('models/lstm_scaler.pkl', 'rb') as f:
+                    scaler = pickle.load(f)
+            except Exception as e:
+                print(f"Скейлер не найден, используем ненормализованные данные: {e}")
+            
+            # Нормализация последовательности данных, если скейлер доступен
+            if scaler is not None:
+                # Получаем размерность последовательности
+                seq_length, num_features = landmark_sequence.shape
+                
+                # Преобразуем в 2D для нормализации
+                sequence_reshaped = landmark_sequence.reshape(seq_length * num_features)
+                sequence_normalized = scaler.transform(sequence_reshaped.reshape(-1, num_features))
+                # Возвращаем к исходной форме
+                landmark_sequence = sequence_normalized
             
             # Преобразование последовательности в тензор
             sequence_tensor = torch.FloatTensor(landmark_sequence).unsqueeze(0)  # добавляем размерность батча
